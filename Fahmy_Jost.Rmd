@@ -1,0 +1,570 @@
+---
+title: Exploratory analysis of Australian rainfall and temperature over the last century
+  in light of recent violent wildfires
+author: "Hossam Fahmy & Nathanael Jost"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    number_sections: true
+    df_print: paged
+  rmdformats::html_clean:
+    self_contained: yes
+    thumbnails: yes
+    lightbox: yes
+    gallery: no
+    highlight: tango
+---
+---
+
+```{r global -optioins, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+##### NOTES: 
+## table output styles: https://cran.r-project.org/web/packages/kableExtra/vignettes/awesome_table_in_html.html
+## downcute: https://juba.github.io/rmdformats/articles/examples/downcute.html
+## dataframe print: https://stackoverflow.com/questions/64643801/r-markdown-how-to-print-dataframe-compactly
+```
+
+```{r, echo  =  T, include = F}
+# Importing packages
+library(tidyverse)
+library(patchwork)
+library(ggplot2)
+library(sf)
+library(osmdata)
+library(plotly)
+library(kableExtra)
+library(ggfortify)
+library(jtools)
+library(sjPlot)
+library(htmltools)
+```
+
+# Introduction
+<br/><br/>
+At the beginning of 2020, the world was shocked to see images of record-breaking wildfires raging all over the Australian continent. 
+The following data about the fires were collected by NASA-satellites and display the spread and temperature (measured in Kelvin) of wildfires during the first week of 2020:
+<br/>
+
+```{r}
+# Importing data
+nasa_fire <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-01-07/MODIS_C6_Australia_and_New_Zealand_7d.csv') %>% 
+  dplyr::rename("Kelvin" = "brightness")
+# range of aquisition dates of the fire-data:
+range(nasa_fire$acq_date)
+```
+<br/>
+```{r, cache = F}
+world <- map_data("world")
+
+aust_fire <- ggplot() +
+  geom_map(
+    data = world, map = world, 
+    aes(long, lat, map_id = region), fill = "grey") + 
+  coord_sf(xlim = c(113.00, 153.00), ylim = c(-42.00, -8.00), expand = T) +
+  geom_point(
+    data = nasa_fire, 
+    aes(longitude, latitude, color = Kelvin),
+    alpha = 0.05, size = 0.2) +
+  scale_color_gradient(low = "red", high = "yellow") +
+  xlab("Longitude") +
+  ylab("Latitude") + 
+  theme(legend.position = "none")
+ 
+## zoom into southeastern area:
+
+aust_fire_small<- ggplot() +
+  geom_map(
+    data = world, map = world, 
+    aes(long, lat, map_id = region), fill = "grey") + 
+  coord_sf(xlim = c(147.00, 152.00), ylim = c(-38.00, -32.00), expand = T) +
+  geom_point(
+    data = nasa_fire, 
+    aes(longitude, latitude, color = Kelvin), 
+    alpha = 0.05, size = 0.1) + 
+  scale_color_gradient(low = "red", high = "yellow") +
+  xlab("") +
+  ylab("")  
+
+aust_fire | aust_fire_small
+
+```
+<br/>
+<font size="1"> Please note that the sizes of the fires are not to scale, to provide a better overview. For more information about the dataset, please follow [this link](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-01-07/readme.md#temperaturecsv).</font>
+<br/><br/>
+This quick look prompts the question of climatological change in Australia. We are aware that the occurance of wildfires is highly dependent on a lot of different environmental, ecological and climatological factors and therefore very hard to predict. In the following, we want to have a closer look at two factors that intuitively influence the occurance of wildfires; temperature and rainfall. 
+<br/>
+
+# Data preperation
+<br/><br/>
+First, we need to import the datasets from [this tidytuesday project](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-01-07/readme.md#temperaturecsv) on github. 
+During the data preparation and cleaning, we investigate the different dataframes, adjust the date columns into date format and since we are joining the two data frames from temperatures and rainfall, we ensure having similar date format and city names all in lower letters in order to match the data properly, we clean the merged data frame from unused columns and dealing with missing values. 
+
+
+
+```{r, cache = F}
+# Importing the data 
+rainfall <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-01-07/rainfall.csv') %>% dplyr::filter(period == 1 | is.na(period)) %>% 
+  dplyr::select(-period) # too late in the process of this project, we noticed that there are some datapoints of rainfall that were measured over multiple days, a few hundred in total, which distorted the data and therefore, these were excluded. 
+
+temperature <- readr::read_csv('https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-01-07/temperature.csv')
+```
+
+Now, we can have a look at the columns of the data, firstly by looking at the column names of the temperature dataset: 
+
+```{r}
+colnames(temperature)
+```
+<br/>
+
+...and of the rainfall dataset:
+
+```{r}
+colnames(rainfall)
+```
+
+It looks like both datasets contain information about the date and the city, where the respective variables were measured. Therefore, we should be to combine the two data frames. 
+<br/>
+
+## Combining the datasets
+<br/><br/>
+
+To join the data, we need to have a look at the structures of the datasets:
+
+```{r, cache = F}
+# define datasets
+df_rain <- rainfall
+df_temp <- temperature
+
+# Take a look at the structures of the data:
+str(df_rain, give.attr = F) 
+str(df_temp, give.attr = F)
+```
+
+There are a few differences in the variables we want to join by. `city_name` is in all uppercase in `df_rain` and in the latter, we have three columns (`year`, `month`, and `day`) as opposed to `date` in `df_temp`. 
+
+```{r, cache = F}
+
+# Creating Date Columns 
+df_rain$date <- as.Date(with(df_rain, 
+                             paste(year, month, day,sep="-")), "%Y-%m-%d")
+
+# Convert to class "Date"
+df_temp$date <- as.Date(df_temp$date)
+
+# Covert city_name to lower case
+df_temp$city_name = tolower(df_temp$city_name)
+df_rain$city_name = tolower(df_rain$city_name)
+```
+<br/>
+
+Finally, we combine the datasets by using `ìnner_join()`. 
+
+```{r}
+# Joining Dataframes using Date & City
+df_merge <- inner_join(df_rain, df_temp, by = c("date", "city_name"))
+
+```
+<br/>
+
+Now we can have a look at the first 1'000 rows of the combined dataset (you can scroll through): 
+```{r}
+df_merge %>% 
+  head(1000) %>% 
+  knitr::kable() %>% 
+  kable_styling(font_size = 9, "striped", full_width = F) %>% 
+  scroll_box(width = "100%", height = "500px")
+
+```
+
+
+```{r}
+# Drop unused  date columns
+df_merge <- df_merge %>% 
+  select( -c("year", "month", "day"))
+
+```
+<br/><br/>
+
+## NA handling
+<br/><br/>
+
+In the data above, it is easy to see that there are some data missing (denoted by `NA`). Analyses of missing values are important, because if there is a systematic pattern, i.e. they are missing for a reason, the data can be distorted. Ideally, the values would be missing completely at random (MCAR) or at least missing at random (MAR). Firstly, we take a look at which variables contain any `NA`'s.  
+
+
+```{r}
+names(which(colSums(is.na(df_merge)) > 0))
+```
+<br/>
+
+Only the variables `rainfall`, `quality` and `temperature` have missing values.
+However, for our analysis, we do not need `quality`. 
+Therefore, we first exclude these columns, so that if we drop `NA`'s later, we don't exclude rows unnecessarily.
+
+```{r}
+df_merge <- df_merge %>% 
+  dplyr::select(-quality)
+```
+
+Now we want to look at how many rows the `rainfall` and `temperature` variables are missing. 
+
+```{r}
+n_missings <- sapply(df_merge, function(x) sum(is.na(x))) %>% 
+  as.data.frame() %>% 
+  tibble::rownames_to_column("Variable") %>% 
+  dplyr::rename("N_missings" = ".") %>% 
+  dplyr::filter(N_missings > 0)
+
+
+n_missings %>% 
+  kbl() %>% 
+  kable_styling(font_size = 15, 
+                full_width = FALSE, 
+                position = "left")
+
+```
+
+
+
+```{r}
+# define NA-dataframe:
+nas <- df_merge[rowSums(is.na(df_merge)) > 0, ]
+
+# how many rows of `rainfall` are missing?
+dim(nas)[1] / dim(df_merge)[1]
+```
+
+In total there are 9.89% rows which contain at at least one missing value. There are many `NA`'s of rainfall (about 21'000). In order to further analyse the missing values, we look at the distribution of `NA`'s across time, and grouped by cities:
+
+```{r}
+nas_overview <- nas[complete.cases(nas[, 'temperature']), ] # exclude all values with NAs 
+# on the variable `temperature`, to look at NA-pattern of `rainfall`
+# dim(nas_overview)
+
+nas_rain_pattern <- nas_overview %>% 
+  dplyr::select(city_name, date) %>% 
+  group_by(city_name) %>% 
+  summarize(min_date = min(date), 
+            max_date = max(date), 
+            N = n()) %>% 
+  dplyr::mutate(range_date = paste0(min_date, " / ", max_date)) %>% 
+  dplyr::select(city_name, range_date, N)
+
+nas_rain_pattern %>% 
+  kbl() %>%
+  kable_styling
+  #kable_minimal()
+```
+
+It seems that Brisbane has the most missing values for rainfall (~15000), followed by Melbourne (~4500), and the others are all below 800. At least for Brisbane and Melbourne, the time periods of the missing data do not show an obvious pattern. Therefore, we ought to take a closer look on that: 
+
+```{r}
+# df_nas_rain_plot <- nas_overview %>% 
+#   dplyr::select(-rainfall) %>% 
+#   group_by(city_name, date) %>% 
+#   summarise(N = n())
+
+nas_overview%>% 
+  ggplot(mapping = aes(x = date, fill = city_name)) +
+           geom_bar() +
+           #scale_fill_brewer(palette = 1) +
+           xlab(" ") +
+           ylab("# NAs") +
+           labs(fill = "City") +
+           theme_bw()
+  
+```
+
+In this histogram, it is easy to see that there are three main periods which have missing values about how much it rained on the respective day in the respective city (approximately):
+
+* 1965 to 1975
+* 1993 to 2002
+* 2008 to 2017
+
+<br/>
+In the present data, the main problematic point is that the cities in which the temperatures were measured are at different locations, so the different cities have different climates. Therefore, when computing averages the average temperature in the year 1969, the data could be skewed, since Brisbane lacks a lot of data. However, an in-depth analysis and potential imputation of missing values would go beyond the scope of the present project and therefore, we decided to drop these rows nonetheless. The reader is advised, however, to keep this critique in mind throughout the remainder of the present work.
+
+
+```{r}
+df_merge2 <- df_merge %>% drop_na()                 
+```
+
+
+# Exploration
+<br/><br/>
+```{r, cache = F}
+# Summarise the data for analyses
+
+# summarise over cities as well as days
+df_sum <- df_merge2 %>%
+  dplyr::select(city_name, rainfall, lat, long, date, temperature) %>% 
+  group_by(city_name, date) %>% 
+  summarise(rainfall = mean(rainfall), 
+            temperature = mean(temperature))
+
+# summarise over days only
+df_sum_single <- df_merge2 %>%
+  dplyr::select(rainfall, lat, long, date, temperature) %>% 
+  group_by(date) %>% 
+  summarise(rainfall = mean(rainfall), 
+            temperature = mean(temperature))
+
+```
+Now we look at the fluctuation of temperatures through the years, using the `plot_ly()` function with a trace to show an interactive time series analysis using the mean temperatures. With this interactive graphic visualization, we can adjust the time frame by narrowing the bar on the graph and then it shows more details like seasonal, monthly or even daily temperature change. Notice that the mean temperature showed more higher peaks and lower drops starting in the 1960s which possibly indicates the start of global warming and climate change due to the industrial revolution.
+<br/>
+
+```{r, eval = T, cache = F}
+pl_temp <- plot_ly(df_sum, type = 'scatter', mode = 'lines') %>%
+  add_trace(x = ~date, y = ~temperature) %>%
+  plotly::layout(showlegend = F, title='Mean temperature (°C) in Australia', xaxis = list(rangeslider = list(visible = T)))
+
+pl_temp
+```
+<br/>
+
+Similarly with rainfall in Australia, we used `plot_ly()` and trace to create an interactive visualization of the mean rainfall over the past 100 years. The graphic can be adjusted to the desired time frame and into a more detailed values over months and days. Notice that there is a drop in the peaks on rainfall especially in the last 20 years, which is a crucial factor that results in more dry atmosphere and thus higher possibility of forest fires in  Australia.
+
+<br/>
+```{r, eval = T, cache = F}
+pl_rain <- plot_ly(df_sum, type = 'scatter', mode  = "lines")%>%
+  add_trace(x = ~date, y = ~rainfall) %>%
+  plotly::layout(showlegend = F, title='Mean rainfall in Australia',
+         xaxis = list(rangeslider = list(visible = T)))
+
+pl_rain
+```
+<br/>
+
+Using the interactive visulization created by `plot_ly()`, we can have a look into at the data, analyze the patterns and identify any outliers or extreme values. For example, when looking at the last 50 years, the last spike of almost 250 mm average rain in one day was in early 1990. Keeping in mind that there are multiple stations measuring the rainfall over several main cities, we take a closer look into the different station to check whether this spike is similar over all different cities or was it just the case for one city and maybe then question the accuracy validity of this data values. 
+To be able to look at the different measuring stations at specific time-periods we created a function (`f_plot_clim()`) that displays either temperature or rainfall at specific times separated for the different measuring stations. The function displays the data either by showing multiple plots for each station or as colored lines. The time period must also be specified. 
+<br/>
+
+```{r, eval =T}
+# Function for creating plots:
+
+f_plot_clim <- function(dat = df_sum, 
+                        y_axis, 
+                        city = "multi", 
+                        start_date = '1910-01-09', 
+                        end_date = '2019-05-31'){
+  
+  dat_plot <- dat %>% 
+    dplyr::filter(date >= start_date & date <= end_date)
+  
+  p <- ggplot(
+    data = dat_plot, mapping = aes_string("date", y_axis)) + 
+    theme_bw()
+  
+  if (city == "multi"){
+    p <- p + geom_line(aes_string("date", y_axis), 
+              position = "identity") +
+              facet_wrap(~city_name)
+  }
+  if (city == "cols") {
+   p <- p + geom_line(aes_string("date", y_axis, color = "city_name"), 
+              position = "identity")
+  }
+return(p)
+}
+```
+
+Finally, we take a look at the rainfall in early 1990 (January - March): 
+
+```{r}
+f_plot_clim(dat = df_sum, 
+            y_axis = "rainfall", 
+            city = "multi", 
+            start_date = '1990-01-01', 
+            end_date = '1990-03-01')
+
+```
+<br/>
+ 
+We see indeed that Sydney displays massive spikes compared to Melbourne and Perth, the latter of which had almost no rain in this period. Furthermore, we notice that there is no plot for Canberra, which indicates that there are some data missing for Canberra in this period. 
+How does the temperature trend look like in this time period?  
+
+```{r}
+f_plot_clim(dat = df_sum, 
+            y_axis = "temperature", 
+            city = "multi", 
+            start_date = '1990-01-01', 
+            end_date = '1990-03-01')
+```
+<br/>
+We observe more or less similar patterns in the cities with respect to temperature, however it is hard to directly compare them. To do the latter, we can draw the trends on one plot: 
+
+
+```{r}
+f_plot_clim(dat = df_sum, 
+            y_axis = "temperature", 
+            city = "cols", 
+            start_date = '1990-01-01', 
+            end_date = '1990-03-01')
+```
+<br/>
+The interactive visualizations and the function we showed are useful tools to explore and get an insight into the data. However, to evaluate relationships between the different variables, we need to conduct the appropriate statistical tests. 
+
+# Analyses
+<br/><br/>
+First, we need to prepare the data for the statistical analysis. Perhaps the most important point here is to average the data by year, because otherwise the relationship between year and temperature / rainfall would a priori not be linear because of seasonal fluctuations, as we have seen earlier.  
+
+```{r}
+# collapse over years 
+df_sum_date <- df_sum %>% 
+  mutate(year = date)
+
+df_sum_date$year <- as.numeric(
+  format(df_sum_date$year, "%Y"))
+
+# summarise data by year for analysis:
+
+df_an <- df_sum_date %>%
+  dplyr::select(year, rainfall, temperature) %>% 
+  group_by(year) %>% 
+  summarise(m_rain = mean(rainfall), 
+            sd_rain = sd(rainfall), 
+            m_temp = mean(temperature), 
+            sd_temp = sd(temperature))
+```
+
+
+## Rainfall change
+
+We run a linear regression model to check whether rainfall has significantly changed over time. 
+
+
+```{r mean and sd rain as predictor, fig.width = 10, fig.height=3}
+## simple models:
+mod.rain <- lm(m_rain ~ year, data = df_an)
+#summ(mod.rain)
+
+
+
+p.mod.rain <- ggplot(data = df_an, mapping = aes(year, m_rain)) + 
+  geom_point(stat = "identity") +
+  geom_smooth(method = "lm", col = "red") +
+  xlab("") +
+  ylab("Mean rainfall (mm)") +
+  theme_bw()
+
+mod.sd.rain <- lm(sd_rain ~ year, data = df_an)
+#summary(mod.sd.rain)
+
+
+p.mod.sd.rain <- ggplot(data = df_an, mapping = aes(year, sd_rain)) + 
+  geom_point(stat = "identity") +
+  geom_smooth(method = "lm", col = "red") +
+  xlab("")+
+  ylab("SD of rainfall (mm)") +
+  theme_bw()
+
+
+p.mod.rain |p.mod.sd.rain
+```
+
+```{r}
+# display the two models: 
+tab_model(mod.rain, mod.sd.rain)
+```
+<br/>
+
+The model shows that the dependent variable year is statistically significant when it comes to mean rainfall, i.e., Australias rainfall in decreasing over time.  
+Similarly, the standard deviation is decreasing as well, which means that there is less fluctuation, a result which may partly be due to overall less rainfall. However, it could also be systematic pattern (a hypothesis which remains to be tested elsewhere).The $R^{2}$ indicates how well the regression model fits the observed data; in the two models above, about 23% and 15% of the variance are explained by the models for mean rainfall and sd of rainfall, respectively. We can also see from the graphs created by ggplot that the mean & standrad deviation of rainfall dropped over the recent years.
+<br/>
+
+## Temperature change
+<br/><br/>
+We also ran a linear regression model to check whether temperature has significantly changed over time. 
+
+```{r, fig.width= 10, fig.height=3}
+
+mod.temp <- lm(m_temp ~ year, data = df_an)
+#summary(mod.temp)
+
+p.mod.temp <- ggplot(data = df_an, mapping = aes(year, m_temp)) + 
+  geom_point(stat = "identity") +
+  geom_smooth(method = "lm", col = "red") +
+  ylab("Mean °C") +
+  xlab("") +
+  theme_bw()
+
+mod.sd.temp <- lm(sd_temp ~ year, data = df_an)
+#summ(mod.sd.temp)
+
+p.mod.sd.temp <- ggplot(data = df_an, mapping = aes(year, sd_temp)) + 
+  geom_point(stat = "identity") +
+  geom_smooth(method = "lm", col = "red") +
+  ylab("SD of °C") +
+  xlab("")+
+  theme_bw()
+
+p.mod.temp| p.mod.sd.temp
+```
+<br/>
+
+```{r}
+tab_model(mod.temp,  mod.sd.temp)
+```
+<br/>
+Using `tab_model()` to display the models we get that the effect of time on the dependent variable mean temperature is above the 5% for the p-value indicating that the null hypothesis is still valid. Therefore, Australia's temperature did not change significantly over time. Again looking at the $R^{2}$ value yields almost no explanation of the variance of the mean-temperature-model. 
+
+However, the analysis of the standard deviation of temperature showed a significant positive relationship with time. Therefore, the yearly fluctuations of the temperature does increase, perhaps reflecting a increase in temperature extremes, which is a well-replicated result in climatology. 
+We can also see from the graphs created by ggplot that the mean temperature & standard deviation have steeply increasing after the drop in 1975 till to this year.
+
+# Chapter of Choice: Shiny
+<br/><br/>
+We are using the shiny package to create an interactive histogram on temperatures in Australia. The most frequent temperature lies around 15c.
+```{r, eval = FALSE}
+library(shiny)
+data(df_temp)
+
+#Define UI for app that draws a histogram 
+ui <- fluidPage(
+  #App title
+  titlePanel("Temperature in Australia"),
+  
+  #sidebar layout with input & output definitions
+  sidebarLayout(
+    
+    #sidebar panel for inputs
+    sidebarPanel(
+      #Input: slider for the number of bins
+      sliderInput(inputId = "bins",
+                  label = "Number of bins:",
+                  min = 1,
+                  max = 50,
+                  value = 30)
+    ),
+    #Main panel for displaying outputs
+    mainPanel(
+      plotOutput(outputId = "distPlot")
+      
+    )
+  )
+)
+
+#Define server logic required to draw a histogram
+server <- function(input, output) {
+  
+  output$distPlot <- renderPlot({
+    x <- temperature$temperature
+    x <- na.omit(x)
+    bins <- seq(min(x), max(x), length.out = input$bins + 1)
+    
+    hist(x, breaks = bins, col = "#75AADB", border = "black",
+         xlab = "Temperature",
+         main = "Histogram of Temperature")
+  })
+}
+
+#create shiny app
+shinyApp(ui = ui, server = server)
+```
+
+# Summary
+<br/><br/>
+In this project, we took a look at Australia's rainfall and temperature over the last century in light of the destructive wildfires at the beginning of 2020. After having analyzed the missing values, we showed how interactive plots using `plot_ly()` can be used to visualize even large datasets and how writing one's own function can aid a more detailed look at the data. The analyses of  rainfall showed that both average rainfall and its fluctuation have decreased over the last century. In contrast, temperature did not significantly change over the last century. However, the fluctuation of temperature significantly and steeply increased, perhaps reflecting an increasing climatological instability towards extreme temperatures. Finally, due to a lack of friends, we also created a small shiny app interactively displaying the distribution of temperature values. 
+
